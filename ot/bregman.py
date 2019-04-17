@@ -426,187 +426,111 @@ def sinkhorn_knopp(a, b, M, reg, numItermax=1000,
             return u.reshape((-1, 1)) * K * v.reshape((1, -1))
 
 
-def sinkhorn_knopp_constrained(a, b, M, reg, numItermax=1000,
-                               stopThr=1e-9, verbose=False, log=False, theta=None,
-                               **kwargs):
-    """
-    erwerwewer
-    Solve the entropic regularization optimal transport problem and return the OT matrix
-
-    The function solves the following optimization problem:
-
-    .. math::
-        \gamma = arg\min_\gamma <\gamma,M>_F + reg\cdot\Omega(\gamma)
-
-        s.t. \gamma 1 = a
-
-             \gamma^T 1= b
-
-             \gamma\geq 0
-    where :
-
-    - M is the (ns,nt) metric cost matrix
-    - :math:`\Omega` is the entropic regularization term :math:`\Omega(\gamma)=\sum_{i,j} \gamma_{i,j}\log(\gamma_{i,j})`
-    - a and b are source and target weights (sum to 1)
-
-    The algorithm used for solving the problem is the Sinkhorn-Knopp matrix scaling algorithm as proposed in [2]_
-
-
-    Parameters
-    ----------
-    a : np.ndarray (ns,)
-        samples weights in the source domain
-    b : np.ndarray (nt,) or np.ndarray (nt,nbb)
-        samples in the target domain, compute sinkhorn with multiple targets
-        and fixed M if b is a matrix (return OT loss + dual variables in log)
-    M : np.ndarray (ns,nt)
-        loss matrix
-    reg : float
-        Regularization term >0
-    numItermax : int, optional
-        Max number of iterations
-    stopThr : float, optional
-        Stop threshol on error (>0)
-    verbose : bool, optional
-        Print information along iterations
-    log : bool, optional
-        record log if True
-
-
-    Returns
-    -------
-    gamma : (ns x nt) ndarray
-        Optimal transportation matrix for the given parameters
-    log : dict
-        log dictionary return only if log==True in parameters
-
-    Examples
-    --------
-
-    >>> import ot
-    >>> a=[.5,.5]
-    >>> b=[.5,.5]
-    >>> M=[[0.,1.],[1.,0.]]
-    >>> ot.sinkhorn(a,b,M,1)
-    array([[ 0.36552929,  0.13447071],
-           [ 0.13447071,  0.36552929]])
-
-
-    References
-    ----------
-
-    .. [2] M. Cuturi, Sinkhorn Distances : Lightspeed Computation of Optimal Transport, Advances in Neural Information Processing Systems (NIPS) 26, 2013
-
-
-    See Also
-    --------
-    ot.lp.emd : Unregularized OT
-    ot.optim.cg : General regularized OT
-
-    """
-
+def sinkhorn_slow(a, b, c, reg, numItermax=1000,
+                  stopThr=1e-9, verbose=0, log=False, **kwargs):
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
-    M = np.asarray(M, dtype=np.float64)
-    gamma = np.empty_like(M)
+    c = np.asarray(c, dtype=np.float64)
 
     if len(a) == 0:
-        a = np.ones((M.shape[0],), dtype=np.float64) / M.shape[0]
+        a = np.ones((c.shape[0],), dtype=np.float64) / c.shape[0]
     if len(b) == 0:
-        b = np.ones((M.shape[1],), dtype=np.float64) / M.shape[1]
-
-    if theta is None:
-        theta = sum(a)
-
-    # init data
-    Nini = len(a)
-    Nfin = len(b)
-
-    if len(b.shape) > 1:
-        nbb = b.shape[1]
-    else:
-        nbb = 0
+        b = np.ones((c.shape[1],), dtype=np.float64) / c.shape[1]
 
     if log:
         log = {'err': []}
 
-    # we assume that no distances are null except those of the diagonal of
-    # distances
-    if nbb:
-        u = np.ones((Nini, nbb)) / Nini
-        v = np.ones((Nfin, nbb)) / Nfin
-    else:
-        u = np.ones(Nini) / Nini
-        v = np.ones(Nfin) / Nfin
+    k = np.empty(c.shape, dtype=c.dtype)
+    np.divide(c, -reg, out=k)
+    np.exp(k, out=k)
 
-    # print(reg)
-
-    # Next 3 lines equivalent to K= np.exp(-M/reg), but faster to compute
-    K = np.empty(M.shape, dtype=M.dtype)
-    np.divide(M, -reg, out=K)
-    np.exp(K, out=K)
-
-    # print(np.min(K))
-    tmp2 = np.empty(b.shape, dtype=M.dtype)
-
-    Kp = (1 / a).reshape(-1, 1) * K
     cpt = 0
     err = 1
-    while (err > stopThr and cpt < numItermax):
-        uprev = u
-        vprev = v
 
-        KtransposeU = np.dot(K.T, u)
-        v = np.divide(b, KtransposeU)
-        u = 1. / np.dot(Kp, v)
+    def projection_c1():
+        return np.multiply((a / k.sum(axis=1))[:, np.newaxis], k)
 
-        if (np.any(KtransposeU == 0)
-          or np.any(np.isnan(u)) or np.any(np.isnan(v))
-          or np.any(np.isinf(u)) or np.any(np.isinf(v))):
-            # we have reached the machine precision
-            # come back to previous solution and quit loop
-            print('Warning: numerical errors at iteration', cpt)
-            u = uprev
-            v = vprev
-            break
-        if cpt % 10 == 0:
-            # we can speed up the process by checking for the error only all
-            # the 10th iterations
-            if nbb:
-                err = np.sum((u - uprev)**2) / np.sum((u)**2) + \
-                      np.sum((v - vprev)**2) / np.sum((v)**2)
-            else:
-                # compute right marginal tmp2= (diag(u)Kdiag(v))^T1
-                np.einsum('i,ij,j->j', u, K, v, out=tmp2)
-                err = np.linalg.norm(tmp2 - b)**2  # violation of marginal
-            if log:
-                log['err'].append(err)
+    def projection_c2():
+        return np.multiply(k, (b / k.sum(axis=0))[np.newaxis, :])
 
-            if verbose:
-                if cpt % 200 == 0:
-                    print(
-                        '{:5s}|{:12s}'.format('It.', 'Err') + '\n' + '-' * 19)
-                print('{:5d}|{:8e}|'.format(cpt, err))
-        gamma = np.einsum('i, ij, j->ij', u, K, v)
-        gamma = np.minimum(theta, gamma)
-        cpt = cpt + 1
+    while err > stopThr and cpt <= numItermax:
+        k_prev = k
+        k = projection_c1()
+        k = projection_c2()
+        err = np.linalg.norm(k - k_prev)
+
+        if log:
+            log['err'].append(err)
+
+        if verbose:
+            if cpt % verbose == 0:
+                print(
+                    '{:5s}|{:12s}'.format('It.', 'Err') + '\n' + '-' * 19)
+            print('{:5d}|{:8e}|'.format(cpt, err))
+
+        cpt += 1
+
     if log:
-        log['u'] = u
-        log['v'] = v
+        return k, log
+    else:
+        return k
 
-    if nbb:  # return only loss
-        res = np.einsum('ik,ij,jk,ij->k', u, K, v, M)
-        if log:
-            return res, log
-        else:
-            return res
 
-    else:  # return OT matrix
+def sinkhorn_knopp_constrained(a, b, M, reg, numItermax=1000,
+                               stopThr=1e-9, verbose=False, log=False, theta=None,
+                               **kwargs):
+
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    c = np.asarray(M, dtype=np.float64)
+
+    if len(a) == 0:
+        a = np.ones((c.shape[0],), dtype=np.float64) / c.shape[0]
+    if len(b) == 0:
+        b = np.ones((c.shape[1],), dtype=np.float64) / c.shape[1]
+
+    if log:
+        log = {'err': []}
+
+    k = np.empty(c.shape, dtype=c.dtype)
+    np.divide(c, -reg, out=k)
+    np.exp(k, out=k)
+
+    cpt = 0
+    err = 1
+
+    def projection_c1():
+        return np.multiply((a / k.sum(axis=1))[:, np.newaxis], k)
+
+    def projection_c2():
+        return np.multiply(k, (b / k.sum(axis=0))[np.newaxis, :])
+
+    def projection_c3():
+        return np.minimum(k, theta)
+
+    while err > stopThr and cpt <= numItermax:
+        k_prev = k
+        k = projection_c1()
+        k = projection_c2()
+        k = projection_c3()
+
+        err = np.linalg.norm(k - k_prev)
+
         if log:
-            # np.einsum('i, ij, j->ij')
-            return gamma, log
-        else:
-            return gamma
+            log['err'].append(err)
+
+        if verbose:
+            if cpt % verbose == 0:
+                print(
+                    '{:5s}|{:12s}'.format('It.', 'Err') + '\n' + '-' * 19)
+            print('{:5d}|{:8e}|'.format(cpt, err))
+
+        cpt += 1
+
+    if log:
+        return k, log
+    else:
+        return k
 
 def greenkhorn(a, b, M, reg, numItermax=10000, stopThr=1e-9, verbose=False, log=False):
     """
