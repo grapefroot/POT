@@ -119,10 +119,10 @@ def sinkhorn(a, b, M, reg, method='sinkhorn', numItermax=1000,
 
     elif method.lower() == 'sinkhorn_constrained':
         def sink():
-            return sinkhorn_knopp_constrained(a, b, M, reg,
-                                              numItermax=numItermax,
-                                              stopThr=stopThr, verbose=verbose,
-                                              log=log, **kwargs)
+            return constrained_transport(a, b, M, reg,
+                                         numItermax=numItermax,
+                                         stopThr=stopThr, verbose=verbose,
+                                         log=log, **kwargs)
 
     else:
         print('Warning : unknown method using classic Sinkhorn Knopp')
@@ -476,9 +476,9 @@ def sinkhorn_slow(a, b, c, reg, numItermax=1000,
         return k
 
 
-def sinkhorn_knopp_constrained(a, b, M, reg, numItermax=1000,
-                               stopThr=1e-9, verbose=False, log=False, theta=None,
-                               **kwargs):
+def constrained_transport(a, b, M, reg, numItermax=1000,
+                          stopThr=1e-9, verbose=False, log=False, theta=None,
+                          **kwargs):
 
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -509,10 +509,90 @@ def sinkhorn_knopp_constrained(a, b, M, reg, numItermax=1000,
         return np.minimum(k, theta)
 
     while err > stopThr and cpt <= numItermax:
-        k_prev = k
         k = projection_c1()
         k = projection_c2()
+        k_prev = k
         k = projection_c3()
+
+        err = np.linalg.norm(k - k_prev)
+
+        if log:
+            log['err'].append(err)
+
+        if verbose:
+            if cpt % verbose == 0:
+                print(
+                    '{:5s}|{:12s}'.format('It.', 'Err') + '\n' + '-' * 19)
+            print('{:5d}|{:8e}|'.format(cpt, err))
+
+        cpt += 1
+
+    if log:
+        return k, log
+    else:
+        return k
+
+
+def partial_transport(a, b, M, reg, numItermax=1000,
+                          stopThr=1e-9, verbose=False, log=False, m=None,
+                          **kwargs):
+
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    c = np.asarray(M, dtype=np.float64)
+
+    if len(a) == 0:
+        a = np.ones((c.shape[0],), dtype=np.float64) / c.shape[0]
+    if len(b) == 0:
+        b = np.ones((c.shape[1],), dtype=np.float64) / c.shape[1]
+
+    if log:
+        log = {'err': []}
+
+    k = np.empty(c.shape, dtype=c.dtype)
+    np.divide(c, -reg, out=k)
+    np.exp(k, out=k)
+
+    cpt = 0
+    err = 1
+
+    q_1 = 1
+    q_2 = 1
+    q_3 = 1
+
+    def projection_c1(gamma):
+        return np.multiply(
+            np.minimum(a / gamma.sum(axis=1), 1)[:, np.newaxis],
+            gamma
+        )
+
+    def projection_c2(gamma):
+        return np.multiply(
+            gamma,
+            np.minimum(b / gamma.sum(axis=0), 1)[np.newaxis, :]
+        )
+
+    def projection_c3(gamma):
+        return gamma / np.sum(gamma) * m
+
+    def compute_qn(n):
+        if n == 1:
+            return q_1 * k_prev / k
+        elif n == 2:
+            return q_2 * k_prev / k
+        elif n == 3:
+            return q_3 * k_prev / k
+
+    while err > stopThr and cpt <= numItermax:
+        k_prev = k
+        k = projection_c1(q_1 * k)
+        q_1 = compute_qn(1)
+        k_prev = k
+        k = projection_c2(q_2 * k)
+        q_2 = compute_qn(2)
+        k_prev = k
+        k = projection_c3(q_3 * k)
+        q_3 = compute_qn(3)
 
         err = np.linalg.norm(k - k_prev)
 
