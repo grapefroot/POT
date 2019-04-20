@@ -509,9 +509,9 @@ def constrained_transport(a, b, M, reg, numItermax=1000,
         return np.minimum(k, theta)
 
     while err > stopThr and cpt <= numItermax:
+        k_prev = k
         k = projection_c1()
         k = projection_c2()
-        k_prev = k
         k = projection_c3()
 
         err = np.linalg.norm(k - k_prev)
